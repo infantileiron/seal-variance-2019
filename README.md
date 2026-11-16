@@ -14,16 +14,28 @@
 2. **拉力录入**：按方案与材料批次登记最大拉力，支持筛选、异常标记与修订；标记样本保留在统计中。
 3. **方差分析**：选择至少两个方案与材料批次，后台 worker 计算 SS、F、p、η²；每次提交冻结参数和测量快照。
 4. **工艺评议**：查看组别均值/标准差，填写推荐方案和至少20字业务理由，负责人签核后冻结，下载 JSON，负责人可查看操作审计。
+5. **外协盲测批**：把工艺与试条替换为匿名编号后发放外协测拉力，避免取样受工艺参数影响。回传先暂存，封批固定边界后拆盲：暂存拉力按真实工艺归组入库并自动生成 ANOVA 评议。
+
+### 盲测批流程与口径
+
+- **建批**：工程师选择 2–8 个工艺、每组 2–50 条试条；系统为每批生成匿名批号（`BB-`）、每条试条生成全局唯一盲码（`BT-`），每个工艺分配随机匿名组号（G1、G2…，顺序与建批顺序无关）。
+- **发放**：匿名清单仅含盲码与匿名组号，可下载 JSON 交付外协；任何列表/详情接口都不返回真实映射。
+- **回传**：外协（或内部代录）按盲码回传拉力，先暂存。错号与他批编号整批拒绝（422）；同一回传内重复编号整批拒绝；同值重传幂等（重试安全）；异值改写拒绝（409）。暂存值不可改写。
+- **核查完整性**：随时可查已回传/缺测清单。缺测、错号或重复试条不给结论。
+- **封批**：open→sealed，行锁保证只成功一次（并发争抢得 409）。封批即回传边界：回传与封批/拆盲并发时，以封批为同一边界，迟到回传 409。
+- **拆盲**：sealed→unblinded 单事务完成——逐条把暂存拉力转为正式样本（样本编号即盲码，可溯源）、按真实工艺归组、创建评议并提交后台 ANOVA。任一试条转入失败（如编号冲突）整批回滚，不留样本或评议；排除冲突后重试安全，重复拆盲 409 不重复入样或建评议。拆盲后迟到回传不影响已生成结果。
+- **权限**：映射（盲码↔真实工艺）仅 admin/analyst 可查；外协角色（external）只能收取匿名清单与回传拉力，原有四个模块接口对其全部关闭；viewer 可看批次与完整性，不能看映射、不能回传/封批/拆盲。
 
 ### 角色与账号
 
 | 角色 | 账号 | 权限与典型动作 |
 |---|---|---|
 | admin / 工艺负责人 | admin@demo.local | 所有业务编辑、计算、推荐、签核冻结、审计 |
-| analyst / 工艺工程师 | analyst@demo.local | 方案与样本新增/修订、提交计算、起草推荐；不能签核 |
-| viewer / 只读观察员 | viewer@demo.local | 查看四模块、下载已完成结果；不能编辑或提交任务 |
+| analyst / 工艺工程师 | analyst@demo.local | 方案与样本新增/修订、提交计算、起草推荐、建批/封批/拆盲；不能签核 |
+| viewer / 只读观察员 | viewer@demo.local | 查看各模块、下载已完成结果、查看盲测完整性；不能编辑或查映射 |
+| external / 外协检测员 | external@demo.local | 仅收取匿名清单并回传拉力；无其他接口权限 |
 
-三个演示账号密码均为 `Demo123!`。权限由后端 JWT 与数据库角色共同校验；前端同步隐藏写入入口。
+四个演示账号密码均为 `Demo123!`。权限由后端 JWT 与数据库角色共同校验；前端同步隐藏写入入口。
 
 ## 快速启动
 
@@ -48,6 +60,7 @@ Docker 默认网络池不足时使用独立可配置子网，默认 `10.253.105.
 | POSTGRES_PASSWORD | seal_local_pass，数据库凭据 |
 | JWT_SECRET | 示例本地 JWT 签名密钥，可在 .env 替换 |
 | SEED_DEMO | true，启动时执行幂等 seed；失败记日志而不阻塞服务 |
+| ARTIFACTS_DIR | /app/artifacts，worker 结果产物目录（本地开发可改指） |
 | NETWORK_SUBNET | 10.253.105.0/24 |
 
 ## 技术与本地开发
@@ -79,7 +92,7 @@ Docker 默认网络池不足时使用独立可配置子网，默认 `10.253.105.
 
 ## Seed 与一天的工作剧本
 
-随机种子 `3105`。自然键为用户邮箱、工艺编号、样本编号、评议标题；已有对象不覆盖，重复 seed 不增行、不覆盖用户修改。初始3账号、3方案、105样本、1个待执行评议（worker 真实计算）。
+随机种子 `3105`。自然键为用户邮箱、工艺编号、样本编号、评议标题、盲测批号；已有对象不覆盖，重复 seed 不增行、不覆盖用户修改。初始4账号、3方案、105样本、1个待执行评议（worker 真实计算）、1个开放中的盲测样批 `BB-DEMO`（HC-S1/HC-S2 各3条试条，可用外协账号演练回传）。
 
 | 方案 | 温度 ℃ | 保压 s | 压力 MPa | 样本 |
 |---|---:|---:|---:|---:|
@@ -106,7 +119,11 @@ backend/scripts/seed_demo.py
 backend/migrations/001_initial.sql
 ```
 
-共享枚举为 ROLES 与 TASK_STATUS/STATUS：后端 `src/constants/enums.py`，认证判断在 `src/utils/security.py`，状态在 `src/services/assessments.py` 与 `src/worker.py`；前端 `src/constants/enums.js`、`src/components/common/status.js`、`src/app.js`。角色枚举 admin/analyst/viewer；任务状态 queued/running/completed/failed，另有 approved 布尔业务状态。
+共享枚举为 ROLES 与 TASK_STATUS/STATUS、BLIND_STATUS：后端 `src/constants/enums.py`，认证判断在 `src/utils/security.py`，状态在 `src/services/assessments.py`、`src/services/blind.py` 与 `src/worker.py`；前端 `src/constants/enums.js`、`src/components/common/status.js`、`src/app.js`。角色枚举 admin/analyst/viewer/external；任务状态 queued/running/completed/failed，另有 approved 布尔业务状态；盲测批状态 open/sealed/unblinded。
+
+## 盲测验证
+
+`test-artifacts/blind-2611/verify_blind.py` 对运行中的后端执行 57 项端到端断言：匿名清单不泄露映射、越权查映射（外协/只读 403）、错号/重复整批拒绝、同值幂等与异值 409、缺测不给结论、封批并发争抢恰一次成功、回传与封批并发同一边界（5 轮无撕裂）、转入冲突整批回滚且重试不重复入样建评议、拆盲后迟到回传不改结果、归组入库与 ANOVA 数值核对、原有样本入口回归。`smoke_frontend.mjs` 用 Node 桩 DOM 渲染各角色页面。两者结果存于同目录 results 文件。
 
 ## 已知范围
 

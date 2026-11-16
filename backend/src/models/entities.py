@@ -46,3 +46,26 @@ class Audit(Base):
     action:Mapped[str]=mapped_column(String(200))
     status:Mapped[int]=mapped_column(Integer)
     created_at:Mapped[str]=mapped_column(String(40))
+class BlindBatch(Base):
+    __tablename__='blind_batches'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    code:Mapped[str]=mapped_column(String(50),unique=True)
+    title:Mapped[str]=mapped_column(String(120))
+    lot:Mapped[str]=mapped_column(String(60))
+    status:Mapped[str]=mapped_column(String(20),default='open')
+    assessment_id:Mapped[int|None]=mapped_column(ForeignKey('assessments.id'),nullable=True,unique=True)
+    created_by:Mapped[str]=mapped_column(String(120),default='')
+    created_at:Mapped[str]=mapped_column(String(40))
+    sealed_at:Mapped[str]=mapped_column(String(40),default='')
+    unblinded_at:Mapped[str]=mapped_column(String(40),default='')
+class BlindItem(Base):
+    __tablename__='blind_items'
+    id:Mapped[int]=mapped_column(primary_key=True)
+    batch_id:Mapped[int]=mapped_column(ForeignKey('blind_batches.id'))
+    blind_code:Mapped[str]=mapped_column(String(50),unique=True)
+    group_alias:Mapped[str]=mapped_column(String(10))
+    process_id:Mapped[int]=mapped_column(ForeignKey('processes.id'))
+    returned_force:Mapped[float|None]=mapped_column(Float,nullable=True)
+    returned_at:Mapped[str]=mapped_column(String(40),default='')
+    returned_by:Mapped[str]=mapped_column(String(120),default='')
+    sample_id:Mapped[int|None]=mapped_column(ForeignKey('samples.id'),nullable=True,unique=True)

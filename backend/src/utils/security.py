@@ -29,3 +29,12 @@ def editor(user:User=Depends(current_user)):
 def admin(user:User=Depends(current_user)):
     if user.role!='admin': raise HTTPException(403,'仅管理员可访问审计或签核发布')
     return user
+def staff(user:User=Depends(current_user)):
+    if user.role=='external': raise HTTPException(403,'外协账号仅可收取匿名清单与回传拉力')
+    return user
+def mapping_reader(user:User=Depends(current_user)):
+    if user.role not in ('admin','analyst'): raise HTTPException(403,'匿名映射仅内部工艺账号可查，外协与只读账号无权访问')
+    return user
+def returner(user:User=Depends(current_user)):
+    if user.role not in ('admin','analyst','external'): raise HTTPException(403,'只读账号不能回传拉力')
+    return user

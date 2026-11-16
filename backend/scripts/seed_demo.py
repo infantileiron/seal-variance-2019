@@ -2,14 +2,14 @@ import random,json
 from datetime import datetime,timezone
 from sqlalchemy import select,func
 from src.config.database import Base,engine,SessionLocal
-from src.models.entities import User,Process,Sample,Assessment
+from src.models.entities import User,Process,Sample,Assessment,BlindBatch,BlindItem
 from src.utils.security import hash_password
 from src.services.assessments import snapshot_for
 
 def seed():
     Base.metadata.create_all(engine);rng=random.Random(3105)
     with SessionLocal() as db:
-        for role in ('admin','analyst','viewer'):
+        for role in ('admin','analyst','viewer','external'):
             email=role+'@demo.local'
             if not db.scalar(select(User).where(User.email==email)):db.add(User(email=email,role=role,password_hash=hash_password('Demo123!')))
         db.commit()
@@ -25,5 +25,18 @@ def seed():
         if not db.scalar(select(Assessment).where(Assessment.title==title)):
             ids=db.scalars(select(Process.id).where(Process.code.in_(['HC-S1','HC-S2','HC-S3'])).order_by(Process.id)).all()
             db.add(Assessment(title=title,lot='HC-1115',snapshot=snapshot_for(db,ids,'HC-1115'),status='queued',created_at=datetime.now(timezone.utc).isoformat()));db.commit()
-        counts={t.__tablename__:db.scalar(select(func.count()).select_from(t)) for t in [User,Process,Sample,Assessment]};print(json.dumps(counts));return counts
+        if not db.scalar(select(BlindBatch).where(BlindBatch.code=='BB-DEMO')):
+            brng=random.Random(7701)
+            procs=db.scalars(select(Process).where(Process.code.in_(['HC-S1','HC-S2'])).order_by(Process.id)).all()
+            batch=BlindBatch(code='BB-DEMO',title='HC-1115 外协盲测样批',lot='HC-1115',status='open',created_by='analyst@demo.local',created_at=datetime.now(timezone.utc).isoformat())
+            db.add(batch);db.flush()
+            order=procs[:];brng.shuffle(order);alias={p.id:f'G{i+1}' for i,p in enumerate(order)}
+            for p in procs:
+                for _ in range(3):
+                    while True:
+                        blind_code='BT-'+''.join(brng.choice('0123456789ABCDEFGHJKLMNPQRSTUVWXYZ') for _ in range(6))
+                        if not db.scalar(select(BlindItem).where(BlindItem.blind_code==blind_code)):break
+                    db.add(BlindItem(batch_id=batch.id,blind_code=blind_code,group_alias=alias[p.id],process_id=p.id))
+            db.commit()
+        counts={t.__tablename__:db.scalar(select(func.count()).select_from(t)) for t in [User,Process,Sample,Assessment,BlindBatch,BlindItem]};print(json.dumps(counts));return counts
 if __name__=='__main__':seed()

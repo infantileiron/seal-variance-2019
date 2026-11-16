@@ -1,10 +1,11 @@
-import time,traceback,json
+import time,traceback,json,os
 from pathlib import Path
 from sqlalchemy import select
 from src.config.database import SessionLocal
 from src.models.entities import Assessment
 from src.services.assessments import queue
 from src.services.statistics import anova
+ARTIFACTS=Path(os.getenv('ARTIFACTS_DIR','/app/artifacts'))
 with SessionLocal() as db:
     for task in db.scalars(select(Assessment).where(Assessment.status=='running')).all():task.status='queued'
     db.commit()
@@ -19,7 +20,7 @@ while True:
             task.status='running';db.commit()
             try:
                 task.result=anova(task.snapshot);task.status='completed'
-                Path('/app/artifacts/'+str(task.id)+'.json').write_text(json.dumps(task.result,ensure_ascii=False))
+                (ARTIFACTS/(str(task.id)+'.json')).write_text(json.dumps(task.result,ensure_ascii=False))
             except Exception as e:task.error=str(e);task.status='failed'
             db.commit();print(f'assessment={task.id} status={task.status}',flush=True)
     except Exception:traceback.print_exc();time.sleep(2)
